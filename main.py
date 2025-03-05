@@ -9,14 +9,14 @@ import json
 sourceLang = "日语"
 targetLang = "中文"
 
-book = epub.read_epub('testBook/千歳くんはラムネ瓶のなか.epub')
+book = epub.read_epub('testBook/yourbook.epub')
 
 client1 = OpenAI(
-    api_key=os.environ.get("ALIYUN_API_KEY"),
+    api_key=os.environ.get("ALIYUN_API_KEY","your-api-key"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 client2 = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY"),
+    api_key=os.environ.get("DEEPSEEK_API_KEY","your-api-key"),
     base_url="https://api.deepseek.com/v1"
 )
 model = "qwen-max"
@@ -209,7 +209,8 @@ def main():
     except:
         pass
     LLMTranslator(book_content, book_summary, book_translation, start_idx)
-    epubRebuilder(book, book_content, book_translation,output_path="epubOutput/output.epub")
+    epubRebuilder(book, book_content, book_translation,output_path="epubOutput/"+book.get_metadata('DC', 'title')[0][0]+".epub")
+    cleanUp()
 
 
 if __name__ == "__main__":
