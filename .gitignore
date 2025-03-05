@@ -1,0 +1,5 @@
+testBook/
+progress.json
+.DS_Store
+epubOutput/
+.idea/*
