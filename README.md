@@ -74,6 +74,7 @@ python main.py
 - 项目中使用的LLM模型为 `qwen-max`，如果需要更换模型，请修改 `model` 变量的值。
 - 默认使用并行模式处理，如果需要更改为串行模式，请修改 `parallel` 变量的值。
 - 并行模式下不会保存进度，请保证网络稳定
+- 一本书也就不到50w token吧 不贵
 
 ## 许可证
 本项目使用 [MIT许可证](https://opensource.org/licenses/MIT)，你可以自由使用、修改和分发本项目。
