@@ -9,14 +9,14 @@ import json
 sourceLang = "日语"
 targetLang = "中文"
 
-book = epub.read_epub('testBook/yourbook.epub')
+book = epub.read_epub(r'testBook/yourbook.epub')
 
 client1 = OpenAI(
-    api_key=os.environ.get("ALIYUN_API_KEY","your-api-key"),
+    api_key=os.environ.get("ALIYUN_API_KEY", "your-api-key"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 client2 = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY","your-api-key"),
+    api_key=os.environ.get("DEEPSEEK_API_KEY", "your-api-key"),
     base_url="https://api.deepseek.com/v1"
 )
 model = "qwen-max"
@@ -65,6 +65,7 @@ contextBackground = ""
 
 def extractBookItems(book):
     book_content = []
+    count = 0
     for item in book.get_items():
         # print(item.get_type())
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
@@ -73,14 +74,13 @@ def extractBookItems(book):
             # print(text)
             if text:
                 book_content.append({"type": "text", "content": text, "format": soup})
+                count+=1
             else:
                 book_content.append({"type": "other", "content": "", "format": soup})
         else:
             book_content.append({"type": "item", "content": "", "format": item})
+    print(f"Extracted {count} content to translate...")
     return book_content
-
-
-
 
 
 def LLMTranslator(book_content, book_summary, book_translation, start_idx=0):
@@ -118,8 +118,9 @@ def LLMTranslator(book_content, book_summary, book_translation, start_idx=0):
                     model=model,
                     messages=[
                         {"role": "system", "content": contextBackground + TranslatorPersona},
-                        {"role": "user", "content": "以下是需要翻译的内容,注意：你必须只输出以下内容的翻译版本：\n" + content[
-                            "content"] + f"请将这一章的内容翻译成{targetLang}。"}
+                        {"role": "user",
+                         "content": "以下是需要翻译的内容,注意：你必须只输出以下内容的翻译版本：\n" + content[
+                             "content"] + f"请将这一章的内容翻译成{targetLang}。"}
                     ],
                     stream=True,
                     timeout=200,
@@ -134,14 +135,86 @@ def LLMTranslator(book_content, book_summary, book_translation, start_idx=0):
                         print(chunk.choices[0].delta.content, end="")
                 book_translation.append(response)
                 # save
-                with open("progress.json", "w") as f:
-                    json.dump({"book_summary": book_summary, "book_translation": book_translation}, f, ensure_ascii=False)
+                with open("progress.json", "w", encoding="utf-8") as f:
+                    json.dump({"book_summary": book_summary, "book_translation": book_translation}, f,
+                              ensure_ascii=False)
             except Exception as e:
                 print(f"Found error: {e}")
                 exit(1)
 
+
+# let's do a pallarel version
+import threading
+
+
+def LLMTranslatorPallarel(book_content):
+    def summary(content, book_summary):
+        stream = client1.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": bookBackground + SummaryPersona + "\n".join(
+                    book_summary if len(book_summary) <= 3 else book_summary[-3:])},
+                {"role": "user", "content": content["content"]}
+            ],
+            stream=True,
+            timeout=200,
+            presence_penalty=0.4
+        )
+        response = ""
+        for chunk in stream:
+            if chunk.choices:
+                response += chunk.choices[0].delta.content
+                print(chunk.choices[0].delta.content, end="")
+        book_summary.append(response)
+
+    book_summary = []
+    count = 0
+    # do summary 1 by 1
+    for content in book_content:
+        if content["type"] == "text":
+            count += 1
+            print(f"Processing {count}th content...")
+            summary(content, book_summary)
+
+    # do translation in parallel
+    def translation(content, book_summary, book_translation, count):
+        contextBackground = bookBackground + "\n".join(
+            book_summary[count - 3:count] if count >= 3 else book_summary[:count])
+        stream = client1.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": contextBackground + TranslatorPersona},
+                {"role": "user", "content": "以下是需要翻译的内容,注意：你必须只输出以下内容的翻译版本：\n" + content[
+                    "content"] + f"请将这一章的内容翻译成{targetLang}。"}
+            ],
+            stream=True,
+            timeout=200,
+            presence_penalty=2.0,
+            top_p=0.9,
+
+        )
+        response = ""
+        for chunk in stream:
+            if chunk.choices:
+                response += chunk.choices[0].delta.content
+        book_translation[count] = response
+
+    count = 0
+    book_translation = ["" for i in range(len(book_content))]
+    threads = []
+    for content in book_content:
+        if content["type"] == "text":
+            t = threading.Thread(target=translation, args=(content, book_summary, book_translation, count))
+            threads.append(t)
+            t.start()
+            count += 1
+    for t in threads:
+        t.join()
+    return book_translation
+
+
 # rebuild epub
-def epubRebuilder(book, book_content, book_translation,output_path="epubOutput/output.epub"):
+def epubRebuilder(book, book_content, book_translation, output_path="epubOutput/output.epub"):
     newBook = epub.EpubBook()
     newBook.set_identifier(book.get_metadata('DC', 'identifier')[0][0])
     newBook.set_title(book.get_metadata('DC', 'title')[0][0])
@@ -188,30 +261,38 @@ def epubRebuilder(book, book_content, book_translation,output_path="epubOutput/o
 
 
 def cleanUp():
-    os.remove("progress.json")
+    os.rename("progress.json", "progress.json.bak")
 
-def main():
+
+def main(pallarel=False):
     book_content = extractBookItems(book)
-    book_summary = []
-    book_translation = []
-    start_idx = 0
-    # resume from progress.json
-    try:
-        with open("progress.json", "r") as f:
-            progress = json.load(f)
-            book_summary = progress["book_summary"]
-            book_translation = progress["book_translation"]
-            if len(book_summary) != len(book_translation):
-                book_summary = book_summary[:min(len(book_summary), len(book_translation))]
-                book_translation = book_translation[:min(len(book_summary), len(book_translation))]
-            start_idx = len(book_summary)
-            print(f"Resuming from index {start_idx}")
-    except:
-        pass
-    LLMTranslator(book_content, book_summary, book_translation, start_idx)
-    epubRebuilder(book, book_content, book_translation,output_path="epubOutput/"+book.get_metadata('DC', 'title')[0][0]+".epub")
-    cleanUp()
+
+    if not pallarel:
+        # resume from progress.json
+        book_summary = []
+        book_translation = []
+        start_idx = 0
+        try:
+            with open("progress.json", "r", encoding="utf-8") as f:
+                progress = json.load(f)
+                book_summary = progress["book_summary"]
+                book_translation = progress["book_translation"]
+                if len(book_summary) != len(book_translation):
+                    book_summary = book_summary[:min(len(book_summary), len(book_translation))]
+                    book_translation = book_translation[:min(len(book_summary), len(book_translation))]
+                start_idx = len(book_summary)
+                print(f"Resuming from index {start_idx}")
+        except:
+            pass
+        LLMTranslator(book_content, book_summary, book_translation, start_idx)
+    else:
+        book_translation = LLMTranslatorPallarel(book_content)
+
+    epubRebuilder(book, book_content, book_translation,
+                  output_path="epubOutput/" + book.get_metadata('DC', 'title')[0][0] + ".epub")
+    if not pallarel:
+        cleanUp()
 
 
 if __name__ == "__main__":
-    main()
+    main(pallarel=True)
